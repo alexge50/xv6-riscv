@@ -99,5 +99,13 @@ sys_uptime(void)
 uint64
 sys_clone(void)
 {
+    uint64 cl_args;
+
+    uint64 flags;
+    uint64 stack;
+
+    if(argaddr(0, &cl_args) < 0 || fetchaddr(cl_args, &flags) < 0 || fetchaddr(cl_args + sizeof(uint64), &stack))
+        return -1;
+
     return 0;
 }
