@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "clone.h"
 
 uint64
 sys_exit(void)
@@ -107,5 +108,10 @@ sys_clone(void)
     if(argaddr(0, &cl_args) < 0 || fetchaddr(cl_args, &flags) < 0 || fetchaddr(cl_args + sizeof(uint64), &stack))
         return -1;
 
-    return 0;
+    struct clone_args cl = {
+        .flags = flags,
+        .stack = stack
+    };
+
+    return clone(cl);
 }
