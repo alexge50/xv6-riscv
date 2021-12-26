@@ -10,10 +10,23 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+struct vm_entry vm_entries[NPROC];
+struct files_entry files_entries[NPROC];
+struct fs_entry fs_entries[NPROC];
+
 struct proc *initproc;
 
 int nextpid = 1;
 struct spinlock pid_lock;
+
+int vm_entries_count = 0;
+struct spinlock vm_entries_lock;
+
+int files_entries_count = 0;
+struct spinlock files_entries_lock;
+
+int fs_entries_count = 0;
+struct spinlock fs_entries_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
@@ -53,6 +66,30 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->kstack = KSTACK((int) (p - proc));
+  }
+}
+
+// initialise entry tables
+void
+proc_resource_entries_init()
+{
+  initlock(&vm_entries_lock, "vm_entries_lock");
+  initlock(&files_entries_lock, "files_entries_lock");
+  initlock(&fs_entries_lock, "fs_entries_lock");
+
+  for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC]; e++) {
+    initlock(&e->lock, "vm_entry");
+    e->unused = 1;
+  }
+
+  for (struct files_entry *e = files_entries; e < &files_entries[NPROC]; e++) {
+    initlock(&e->lock, "files_entry");
+    e->unused = 1;
+  }
+
+  for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC]; e++) {
+    initlock(&e->lock, "fs_entry");
+    e->unused = 1;
   }
 }
 
@@ -97,6 +134,13 @@ allocpid() {
   return pid;
 }
 
+static struct vm_entry* alloc_vm_entry(struct proc* p);
+static struct files_entry* alloc_files_entry();
+static struct fs_entry* alloc_fs_entry();
+static void free_vm_entry(struct vm_entry* e);
+static void free_files_entry(struct files_entry* e);
+static void free_fs_entry(struct fs_entry* e);
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -128,12 +172,30 @@ found:
   }
 
   // An empty user page table.
-  p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
+  p->vm = alloc_vm_entry(p);
+  if (p->vm == 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+
+  p->files = alloc_files_entry();
+  if (p->files == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  p->fs = alloc_fs_entry();
+  if (p->fs == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  release(&p->vm->lock);
+  release(&p->files->lock);
+  release(&p->fs->lock);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -153,10 +215,9 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
-  p->pagetable = 0;
-  p->sz = 0;
+  free_vm_entry(p->vm);
+  free_files_entry(p->files);
+  free_fs_entry(p->fs);
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -164,6 +225,97 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+}
+
+// e->lock must be held.
+static void
+free_vm_entry(struct vm_entry* e)
+{
+  if (e->pagetable)
+    proc_freepagetable(e->pagetable, e->sz);
+  e->pagetable = 0;
+  e->sz = 0;
+  e->unused = 1;
+}
+
+static struct vm_entry*
+alloc_vm_entry(struct proc* p)
+{
+  struct vm_entry *entry = 0;
+
+  for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC] && entry == 0; e++) {
+    acquire(&e->lock);
+    if (e->unused == 1) {
+      entry = e;
+    } else {
+      release(&e->lock);
+    }
+  }
+
+  if (entry == 0) {
+    return 0;
+  }
+
+  entry->unused = 0;
+  entry->pagetable = proc_pagetable(p);
+  if (entry->pagetable == 0) {
+    free_vm_entry(entry);
+    release(&p->lock);
+    return 0;
+  }
+  entry->sz = 0;
+
+  return entry;
+}
+
+// e->lock must be held.
+static void
+free_files_entry(struct files_entry* e)
+{
+  e->unused = 1;
+}
+
+static struct files_entry*
+alloc_files_entry()
+{
+  struct files_entry *entry = 0;
+
+  for (struct files_entry *e = files_entries; e < &files_entries[NPROC] && entry == 0; e++) {
+    acquire(&e->lock);
+    if (e->unused == 1) {
+      entry = e;
+      e->unused = 0;
+    } else {
+      release(&e->lock);
+    }
+  }
+
+  return entry;
+}
+
+// e->lock must be held.
+static void
+free_fs_entry(struct fs_entry* e)
+{
+  e->unused = 1;
+}
+
+static struct fs_entry*
+alloc_fs_entry()
+{
+  struct fs_entry *entry = 0;
+
+  for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC] && entry == 0; e++) {
+    acquire(&e->lock);
+    if (e->unused == 1) {
+      entry = e;
+      e->unused = 0;
+    } else {
+      release(&e->lock);
+    }
+  }
+
+  return entry;
 }
 
 // Create a user page table for a given process,
@@ -232,15 +384,15 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
-  p->sz = PGSIZE;
+  uvminit(p->vm->pagetable, initcode, sizeof(initcode));
+  p->vm->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
-  p->cwd = namei("/");
+  p->fs->cwd = namei("/");
 
   p->state = RUNNABLE;
 
@@ -255,15 +407,15 @@ growproc(int n)
   uint sz;
   struct proc *p = myproc();
 
-  sz = p->sz;
+  sz = p->vm->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->vm->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->vm->pagetable, sz, sz + n);
   }
-  p->sz = sz;
+  p->vm->sz = sz;
   return 0;
 }
 
@@ -282,12 +434,12 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
-  np->sz = p->sz;
+  np->vm->sz = p->vm->sz;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -297,9 +449,9 @@ fork(void)
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
-    if(p->ofile[i])
-      np->ofile[i] = filedup(p->ofile[i]);
-  np->cwd = idup(p->cwd);
+    if(p->files->ofile[i])
+      np->files->ofile[i] = filedup(p->files->ofile[i]);
+  np->fs->cwd = idup(p->fs->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -346,17 +498,17 @@ exit(int status)
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
-      struct file *f = p->ofile[fd];
+    if(p->files->ofile[fd]){
+      struct file *f = p->files->ofile[fd];
       fileclose(f);
-      p->ofile[fd] = 0;
+      p->files->ofile[fd] = 0;
     }
   }
 
   begin_op();
-  iput(p->cwd);
+  iput(p->fs->cwd);
   end_op();
-  p->cwd = 0;
+  p->fs->cwd = 0;
 
   acquire(&wait_lock);
 
@@ -401,7 +553,7 @@ wait(uint64 addr)
         if(np->state == ZOMBIE){
           // Found one.
           pid = np->pid;
-          if(addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate,
+          if(addr != 0 && copyout(p->vm->pagetable, addr, (char *)&np->xstate,
                                   sizeof(np->xstate)) < 0) {
             release(&np->lock);
             release(&wait_lock);
@@ -604,7 +756,7 @@ either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
 {
   struct proc *p = myproc();
   if(user_dst){
-    return copyout(p->pagetable, dst, src, len);
+    return copyout(p->vm->pagetable, dst, src, len);
   } else {
     memmove((char *)dst, src, len);
     return 0;
@@ -619,7 +771,7 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 {
   struct proc *p = myproc();
   if(user_src){
-    return copyin(p->pagetable, dst, src, len);
+    return copyin(p->vm->pagetable, dst, src, len);
   } else {
     memmove(dst, (char*)src, len);
     return 0;
