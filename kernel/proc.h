@@ -84,6 +84,7 @@ struct vm_entry {
   struct spinlock lock;
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
+  uint64 last_trapframe;       // User space address of where the last trapfram was allocated in the address space
   char unused;
 };
 
@@ -121,6 +122,7 @@ struct proc {
   struct files_entry* files;
   struct fs_entry* fs;
   struct trapframe *trapframe; // data page for trampoline.S
+  uint64 user_trapframe;       // address of trapframe in userspace
   struct context context;      // swtch() here to run process
 
   char name[16];               // Process name (debugging)

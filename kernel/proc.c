@@ -135,19 +135,20 @@ allocpid() {
   return pid;
 }
 
-static struct vm_entry* alloc_vm_entry(struct proc* p);
+struct vm_entry* alloc_vm_entry(struct proc* p);
 static struct files_entry* alloc_files_entry();
 static struct fs_entry* alloc_fs_entry();
-static void free_vm_entry(struct vm_entry* e);
+void free_vm_entry(struct proc* p, struct vm_entry* e);
 static void free_files_entry(struct files_entry* e);
 static void free_fs_entry(struct fs_entry* e);
+static uint64 proc_alloc_trapframe(struct proc* p);
 
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(void)
+allocproc(struct vm_entry* vm)
 {
   struct proc *p;
 
@@ -167,31 +168,37 @@ found:
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
-    freeproc(p);
-    release(&p->lock);
-    return 0;
+    goto bad;
   }
 
   // An empty user page table.
-  p->vm = alloc_vm_entry(p);
-  if (p->vm == 0) {
-    freeproc(p);
-    release(&p->lock);
-    return 0;
+  if(vm != 0) {
+    acquire(&vm->lock);
+    p->vm = vm;
+    p->user_trapframe = proc_alloc_trapframe(p);
+
+    if(p->user_trapframe == 0) {
+      goto bad;
+    }
+
+    p->vm->last_trapframe = p->user_trapframe;
+  } else { // allocate new vm
+    p->vm = alloc_vm_entry(p);
+    if (p->vm == 0) {
+      goto bad;
+    }
+    p->user_trapframe = TRAPFRAME;
+    p->vm->last_trapframe = p->user_trapframe;
   }
 
   p->files = alloc_files_entry();
   if (p->files == 0) {
-    freeproc(p);
-    release(&p->lock);
-    return 0;
+    goto bad;
   }
 
   p->fs = alloc_fs_entry();
   if (p->fs == 0) {
-    freeproc(p);
-    release(&p->lock);
-    return 0;
+    goto bad;
   }
 
   release(&p->vm->lock);
@@ -205,18 +212,39 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+
+bad:
+  freeproc(p);
+
+  if(holding(&p->vm->lock))
+    release(&p->vm->lock);
+  if(holding(&p->files->lock))
+    release(&p->files->lock);
+  if(holding(&p->fs->lock))
+    release(&p->fs->lock);
+
+  release(&p->lock);
+
+  return 0;
 }
 
 // free a proc structure and the data hanging from it,
 // including user pages.
-// p->lock must be held.
+// p->lock must be held, p->vm->lock must be held
 static void
 freeproc(struct proc *p)
 {
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  free_vm_entry(p->vm);
+
+  if(p->user_trapframe)
+    uvmunmap(p->vm->pagetable, p->user_trapframe, 1, 0);
+  p->user_trapframe = 0;
+
+  free_vm_entry(p, p->vm);
+  p->vm = 0;
+
   free_files_entry(p->files);
   free_fs_entry(p->fs);
   p->pid = 0;
@@ -228,23 +256,37 @@ freeproc(struct proc *p)
   p->state = UNUSED;
 }
 
+// frees the entry if there is no other process sharing this resource
 // e->lock must be held.
-static void
-free_vm_entry(struct vm_entry* e)
+void
+free_vm_entry(struct proc* p, struct vm_entry* e)
 {
-  if (e->pagetable)
-    proc_freepagetable(e->pagetable, e->sz);
-  e->pagetable = 0;
-  e->sz = 0;
-  e->unused = 1;
+  char shared_vm_entry = 0;
+
+  for(struct proc* np = proc; np < &proc[NPROC]; np++) {
+    if(np != p && np->vm == e) {
+      shared_vm_entry = 1;
+    }
+  }
+
+  if(!shared_vm_entry) {
+    if (e->pagetable) {
+      proc_freepagetable(e->pagetable, e->sz);
+    }
+    e->pagetable = 0;
+    e->sz = 0;
+    e->unused = 1;
+  }
 }
 
-static struct vm_entry*
+struct vm_entry*
 alloc_vm_entry(struct proc* p)
 {
   struct vm_entry *entry = 0;
 
   for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC] && entry == 0; e++) {
+    //if(holding(&e->lock))
+    //  continue;
     acquire(&e->lock);
     if (e->unused == 1) {
       entry = e;
@@ -260,10 +302,10 @@ alloc_vm_entry(struct proc* p)
   entry->unused = 0;
   entry->pagetable = proc_pagetable(p);
   if (entry->pagetable == 0) {
-    free_vm_entry(entry);
-    release(&p->lock);
+    free_vm_entry(p, entry);
     return 0;
   }
+  entry->last_trapframe = TRAPFRAME;
   entry->sz = 0;
 
   return entry;
@@ -352,13 +394,27 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
+// Creates a new trapframe page for a process with shared memory
+// vm->lock and p->lock must be held
+static uint64
+proc_alloc_trapframe(struct proc* p)
+{
+  uint64 user_trapframe = p->vm->last_trapframe - PGSIZE;
+
+  if(mappages(p->vm->pagetable, user_trapframe, PGSIZE,
+              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+    return 0;
+  }
+
+  return user_trapframe;
+}
+
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -380,7 +436,7 @@ userinit(void)
 {
   struct proc *p;
 
-  p = allocproc();
+  p = allocproc(0);
   initproc = p;
   
   // allocate one user page and copy init's instructions
@@ -408,6 +464,8 @@ growproc(int n)
   uint sz;
   struct proc *p = myproc();
 
+  acquire(&p->vm->lock);
+
   sz = p->vm->sz;
   if(n > 0){
     if((sz = uvmalloc(p->vm->pagetable, sz, sz + n)) == 0) {
@@ -417,6 +475,9 @@ growproc(int n)
     sz = uvmdealloc(p->vm->pagetable, sz, sz + n);
   }
   p->vm->sz = sz;
+
+  release(&p->vm->lock);
+
   return 0;
 }
 
@@ -442,22 +503,33 @@ clone(struct clone_args cl)
   struct proc *p = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if((np = allocproc(
+      cl.flags & CLONE_VM ? p->vm : 0
+      )) == 0){
     return -1;
   }
 
-  // Copy user memory from parent to child.
-  if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0){
-    freeproc(np);
-    release(&np->lock);
-    return -1;
+  if(!(cl.flags & CLONE_VM)) {
+    // Copy user memory from parent to child.
+    acquire(&p->vm->lock);
+    if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0){
+      freeproc(np);
+      release(&p->vm->lock);
+      release(&np->lock);
+      return -1;
+    }
+    np->vm->sz = p->vm->sz;
+    release(&p->vm->lock);
   }
-  np->vm->sz = p->vm->sz;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
-  // Cause fork to return 0 in the child.
+  if(cl.flags & CLONE_VM) {
+    np->trapframe->sp = cl.stack;
+  }
+
+  // Cause clone to return 0 in the child.
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
@@ -525,8 +597,7 @@ exit(int status)
 
   acquire(&wait_lock);
 
-  // Give any children to init.
-  reparent(p);
+
 
   // Parent might be sleeping in wait().
   wakeup(p->parent);
