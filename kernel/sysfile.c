@@ -18,6 +18,7 @@
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
+// myproc()->files->lock must be held
 static int
 argfd(int n, int *pfd, struct file **pf)
 {
@@ -37,6 +38,7 @@ argfd(int n, int *pfd, struct file **pf)
 
 // Allocate a file descriptor for the given file.
 // Takes over file reference from caller on success.
+// p->files->lock must be held
 static int
 fdalloc(struct file *f)
 {
@@ -49,6 +51,7 @@ fdalloc(struct file *f)
       return fd;
     }
   }
+
   return -1;
 }
 
@@ -60,9 +63,14 @@ sys_dup(void)
 
   if(argfd(0, 0, &f) < 0)
     return -1;
-  if((fd=fdalloc(f)) < 0)
+
+  acquire(&myproc()->files->lock);
+  if((fd=fdalloc(f)) < 0) {
+    release(&myproc()->files->lock);
     return -1;
+  }
   filedup(f);
+  release(&myproc()->files->lock);
   return fd;
 }
 
@@ -73,9 +81,19 @@ sys_read(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  acquire(&myproc()->files->lock);
+  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0) {
+    release(&myproc()->files->lock);
     return -1;
-  return fileread(f, p, n);
+  }
+
+  struct file* dup = filedup(f);
+  release(&myproc()->files->lock);
+
+  uint64 r = fileread(dup, p, n);
+  fileclose(dup);
+
+  return r;
 }
 
 uint64
@@ -85,10 +103,19 @@ sys_write(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  acquire(&myproc()->files->lock);
+  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0) {
+    release(&myproc()->files->lock);
     return -1;
+  }
 
-  return filewrite(f, p, n);
+  struct file* dup = filedup(f);
+  release(&myproc()->files->lock);
+
+  uint64 r = filewrite(dup, p, n);
+  fileclose(dup);
+
+  return r;
 }
 
 uint64
@@ -97,10 +124,14 @@ sys_close(void)
   int fd;
   struct file *f;
 
-  if(argfd(0, &fd, &f) < 0)
+  acquire(&myproc()->files->lock);
+  if(argfd(0, &fd, &f) < 0) {
+    release(&myproc()->files->lock);
     return -1;
+  }
   myproc()->files->ofile[fd] = 0;
   fileclose(f);
+  release(&myproc()->files->lock);
   return 0;
 }
 
@@ -110,9 +141,16 @@ sys_fstat(void)
   struct file *f;
   uint64 st; // user pointer to struct stat
 
-  if(argfd(0, 0, &f) < 0 || argaddr(1, &st) < 0)
+  acquire(&myproc()->files->lock);
+  if(argfd(0, 0, &f) < 0 || argaddr(1, &st) < 0) {
+    release(&myproc()->files->lock);
     return -1;
-  return filestat(f, st);
+  }
+
+  uint64 r = filestat(f, st);
+  release(&myproc()->files->lock);
+
+  return r;
 }
 
 // Create the path new as a link to the same inode as old.
@@ -322,13 +360,16 @@ sys_open(void)
     return -1;
   }
 
+  acquire(&myproc()->files->lock);
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
     iunlockput(ip);
     end_op();
+    release(&myproc()->files->lock);
     return -1;
   }
+  release(&myproc()->files->lock);
 
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
@@ -469,11 +510,13 @@ sys_pipe(void)
   if(pipealloc(&rf, &wf) < 0)
     return -1;
   fd0 = -1;
+  acquire(&myproc()->files->lock);
   if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
     if(fd0 >= 0)
       p->files->ofile[fd0] = 0;
     fileclose(rf);
     fileclose(wf);
+    release(&myproc()->files->lock);
     return -1;
   }
   if(copyout(p->vm->pagetable, fdarray, (char*)&fd0, sizeof(fd0)) < 0 ||
@@ -482,7 +525,10 @@ sys_pipe(void)
     p->files->ofile[fd1] = 0;
     fileclose(rf);
     fileclose(wf);
+    release(&myproc()->files->lock);
     return -1;
   }
+
+  release(&myproc()->files->lock);
   return 0;
 }

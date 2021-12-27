@@ -135,12 +135,6 @@ allocpid() {
   return pid;
 }
 
-struct vm_entry* alloc_vm_entry(struct proc* p);
-static struct files_entry* alloc_files_entry();
-struct fs_entry* alloc_fs_entry();
-void free_vm_entry(struct vm_entry* e);
-static void free_files_entry(struct files_entry* e);
-void free_fs_entry(struct fs_entry* e);
 static uint64 proc_alloc_trapframe(struct proc* p);
 
 // Look in the process table for an UNUSED proc.
@@ -148,7 +142,7 @@ static uint64 proc_alloc_trapframe(struct proc* p);
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(struct vm_entry* vm, struct fs_entry* fs)
+allocproc(struct vm_entry* vm, struct files_entry* files, struct fs_entry* fs)
 {
   struct proc *p;
 
@@ -192,9 +186,15 @@ found:
     p->vm->last_trapframe = p->user_trapframe;
   }
 
-  p->files = alloc_files_entry();
-  if (p->files == 0) {
-    goto bad;
+  if(files != 0) {
+    p->files = files;
+    acquire(&p->files->lock);
+    p->files->reference_count++;
+  } else {
+    p->files = alloc_files_entry();
+    if (p->files == 0) {
+      goto bad;
+    }
   }
 
   if(fs != 0) {
@@ -317,13 +317,32 @@ alloc_vm_entry(struct proc* p)
 }
 
 // e->lock must be held.
-static void
+void
 free_files_entry(struct files_entry* e)
 {
+  if(e == 0)
+    return;
+
+  if(e->reference_count == 0) {
+    panic("already free'ed fs_entry");
+  }
+
+  if(e->reference_count == 1) {
+    // free on the last reference held
+
+    for(int fd = 0; fd < NOFILE; fd++){
+      if(e->ofile[fd]){
+        struct file *f = e->ofile[fd];
+        fileclose(f);
+        e->ofile[fd] = 0;
+      }
+    }
+  }
+
   e->reference_count --;
 }
 
-static struct files_entry*
+struct files_entry*
 alloc_files_entry()
 {
   struct files_entry *entry = 0;
@@ -459,7 +478,7 @@ userinit(void)
 {
   struct proc *p;
 
-  p = allocproc(0, 0);
+  p = allocproc(0, 0, 0);
   initproc = p;
   
   // allocate one user page and copy init's instructions
@@ -530,8 +549,10 @@ clone(struct clone_args cl)
   // Allocate process.
   if((np = allocproc(
       cl.flags & CLONE_VM ? p->vm : 0,
+      cl.flags & CLONE_FILES ? p->files : 0,
       cl.flags & CLONE_FS ? p->fs : 0
       )) == 0){
+    release(&np->lock);
     return -1;
   }
 
@@ -559,9 +580,19 @@ clone(struct clone_args cl)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
-    if(p->files->ofile[i])
-      np->files->ofile[i] = filedup(p->files->ofile[i]);
+  if(!(cl.flags & CLONE_FILES)) {
+    acquire(&p->files->lock);
+    acquire(&np->files->lock);
+
+    for(i = 0; i < NOFILE; i++) {
+      if(p->files->ofile[i])
+        np->files->ofile[i] = filedup(p->files->ofile[i]);
+    }
+
+    release(&p->files->lock);
+    release(&np->files->lock);
+  }
+
 
   if(!(cl.flags & CLONE_FS)) {
     acquire(&np->fs->lock);
@@ -615,13 +646,10 @@ exit(int status)
     panic("init exiting");
 
   // Close all open files.
-  for(int fd = 0; fd < NOFILE; fd++){
-    if(p->files->ofile[fd]){
-      struct file *f = p->files->ofile[fd];
-      fileclose(f);
-      p->files->ofile[fd] = 0;
-    }
-  }
+  acquire(&p->files->lock);
+  free_files_entry(p->files);
+  release(&p->files->lock);
+  p->files = 0;
 
   // free_fs_entry
   acquire(&p->fs->lock);

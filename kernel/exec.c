@@ -123,6 +123,20 @@ exec(char *path, char **argv)
   }
   release(&p->fs->lock);
 
+  // Make a clean copy of `files_entry` if the resource is shared
+  acquire(&p->files->lock);
+  if(p->files->reference_count > 1) {
+    struct files_entry* old_files = p->files;
+    p->files = alloc_files_entry();
+    for(i = 0; i < NOFILE; i++) {
+      if(p->files->ofile[i])
+        p->files->ofile[i] = filedup(old_files->ofile[i]);
+    }
+    free_files_entry(old_files);
+    release(&old_files->lock);
+  }
+  release(&p->files->lock);
+
   // Commit to the user image.
   old_vm = p->vm;
   old_trapframe = p->user_trapframe;
