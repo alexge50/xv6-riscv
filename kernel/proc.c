@@ -140,7 +140,7 @@ static struct files_entry* alloc_files_entry();
 static struct fs_entry* alloc_fs_entry();
 void free_vm_entry(struct proc* p, struct vm_entry* e);
 static void free_files_entry(struct files_entry* e);
-static void free_fs_entry(struct fs_entry* e);
+static void free_fs_entry(struct proc* p, struct fs_entry* e);
 static uint64 proc_alloc_trapframe(struct proc* p);
 
 // Look in the process table for an UNUSED proc.
@@ -148,7 +148,7 @@ static uint64 proc_alloc_trapframe(struct proc* p);
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(struct vm_entry* vm)
+allocproc(struct vm_entry* vm, struct fs_entry* fs)
 {
   struct proc *p;
 
@@ -196,14 +196,18 @@ found:
     goto bad;
   }
 
-  p->fs = alloc_fs_entry();
-  if (p->fs == 0) {
-    goto bad;
+  if(fs != 0) {
+    p->fs = fs;
+  } else {
+    p->fs = alloc_fs_entry();
+    if (p->fs == 0) {
+      goto bad;
+    }
+    release(&p->fs->lock);
   }
 
   release(&p->vm->lock);
   release(&p->files->lock);
-  release(&p->fs->lock);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -246,7 +250,8 @@ freeproc(struct proc *p)
   p->vm = 0;
 
   free_files_entry(p->files);
-  free_fs_entry(p->fs);
+  free_fs_entry(p, p->fs);
+  p->fs = 0;
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -338,9 +343,28 @@ alloc_files_entry()
 
 // e->lock must be held.
 static void
-free_fs_entry(struct fs_entry* e)
+free_fs_entry(struct proc* p, struct fs_entry* e)
 {
-  e->unused = 1;
+  if(e == 0)
+    return;
+
+  char shared_fs_entry = 0;
+
+  for(struct proc* np = proc; np < &proc[NPROC]; np++) {
+    if(np != p && np->fs == e) {
+      shared_fs_entry = 1;
+    }
+  }
+
+  if(!shared_fs_entry) {
+    if(e->cwd != 0) {
+      begin_op();
+      iput(e->cwd);
+      end_op();
+    }
+    e->cwd = 0;
+    e->unused = 1;
+  }
 }
 
 static struct fs_entry*
@@ -436,7 +460,7 @@ userinit(void)
 {
   struct proc *p;
 
-  p = allocproc(0);
+  p = allocproc(0, 0);
   initproc = p;
   
   // allocate one user page and copy init's instructions
@@ -449,7 +473,9 @@ userinit(void)
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
+  acquire(&p->fs->lock);
   p->fs->cwd = namei("/");
+  release(&p->fs->lock);
 
   p->state = RUNNABLE;
 
@@ -504,7 +530,8 @@ clone(struct clone_args cl)
 
   // Allocate process.
   if((np = allocproc(
-      cl.flags & CLONE_VM ? p->vm : 0
+      cl.flags & CLONE_VM ? p->vm : 0,
+      cl.flags & CLONE_FS ? p->fs : 0
       )) == 0){
     return -1;
   }
@@ -536,7 +563,12 @@ clone(struct clone_args cl)
   for(i = 0; i < NOFILE; i++)
     if(p->files->ofile[i])
       np->files->ofile[i] = filedup(p->files->ofile[i]);
-  np->fs->cwd = idup(p->fs->cwd);
+
+  if(!(cl.flags & CLONE_FS)) {
+    acquire(&np->fs->lock);
+    np->fs->cwd = idup(p->fs->cwd);
+    release(&np->fs->lock);
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -590,10 +622,11 @@ exit(int status)
     }
   }
 
-  begin_op();
-  iput(p->fs->cwd);
-  end_op();
-  p->fs->cwd = 0;
+  // free_fs_entry
+  acquire(&p->fs->lock);
+  free_fs_entry(p, p->fs);
+  release(&p->fs->lock);
+  p->fs = 0;
 
   acquire(&wait_lock);
 

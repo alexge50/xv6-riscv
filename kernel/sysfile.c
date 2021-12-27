@@ -406,9 +406,11 @@ sys_chdir(void)
     return -1;
   }
   iunlock(ip);
+  acquire(&p->fs->lock);
   iput(p->fs->cwd);
   end_op();
   p->fs->cwd = ip;
+  release(&p->fs->lock);
   return 0;
 }
 

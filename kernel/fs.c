@@ -632,8 +632,12 @@ namex(char *path, int nameiparent, char *name)
 
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
-  else
+  else {
+    acquire(&myproc()->fs->lock);
     ip = idup(myproc()->fs->cwd);
+    release(&myproc()->fs->lock);
+  }
+
 
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
