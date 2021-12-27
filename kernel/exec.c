@@ -124,7 +124,7 @@ exec(char *path, char **argv)
 
   // Freeing previous process trap frame and vm entry
   uvmunmap(old_vm->pagetable, old_trapframe, 1, 0);
-  free_vm_entry(p, old_vm);
+  free_vm_entry(old_vm);
   release(&p->vm->lock);
   release(&old_vm->lock);
 
@@ -135,7 +135,7 @@ exec(char *path, char **argv)
     release(&p->vm->lock);
   if(new_vm) {
     uvmunmap(new_vm->pagetable, TRAMPOLINE, 1, 0);
-    free_vm_entry(p, new_vm);
+    free_vm_entry(new_vm);
     if(holding(&new_vm->lock))
       release(&new_vm->lock);
   }

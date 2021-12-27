@@ -85,19 +85,19 @@ struct vm_entry {
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   uint64 last_trapframe;       // User space address of where the last trapfram was allocated in the address space
-  char unused;
+  int reference_count;
 };
 
 struct files_entry {
   struct spinlock lock;
   struct file *ofile[NOFILE];  // Open files
-  char unused;
+  int reference_count;
 };
 
 struct fs_entry {
   struct spinlock lock;
   struct inode *cwd;           // Current directory
-  char unused;
+  int reference_count;
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };

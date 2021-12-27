@@ -80,17 +80,17 @@ proc_resource_entries_init()
 
   for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC]; e++) {
     initlock(&e->lock, "vm_entry");
-    e->unused = 1;
+    e->reference_count = 0;
   }
 
   for (struct files_entry *e = files_entries; e < &files_entries[NPROC]; e++) {
     initlock(&e->lock, "files_entry");
-    e->unused = 1;
+    e->reference_count = 0;
   }
 
   for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC]; e++) {
     initlock(&e->lock, "fs_entry");
-    e->unused = 1;
+    e->reference_count = 0;
   }
 }
 
@@ -138,9 +138,9 @@ allocpid() {
 struct vm_entry* alloc_vm_entry(struct proc* p);
 static struct files_entry* alloc_files_entry();
 static struct fs_entry* alloc_fs_entry();
-void free_vm_entry(struct proc* p, struct vm_entry* e);
+void free_vm_entry(struct vm_entry* e);
 static void free_files_entry(struct files_entry* e);
-static void free_fs_entry(struct proc* p, struct fs_entry* e);
+static void free_fs_entry(struct fs_entry* e);
 static uint64 proc_alloc_trapframe(struct proc* p);
 
 // Look in the process table for an UNUSED proc.
@@ -176,6 +176,7 @@ found:
     acquire(&vm->lock);
     p->vm = vm;
     p->user_trapframe = proc_alloc_trapframe(p);
+    p->vm->reference_count++;
 
     if(p->user_trapframe == 0) {
       goto bad;
@@ -198,14 +199,17 @@ found:
 
   if(fs != 0) {
     p->fs = fs;
+    acquire(&p->fs->lock);
+    p->fs->reference_count++;
   } else {
     p->fs = alloc_fs_entry();
     if (p->fs == 0) {
       goto bad;
     }
-    release(&p->fs->lock);
+
   }
 
+  release(&p->fs->lock);
   release(&p->vm->lock);
   release(&p->files->lock);
 
@@ -246,11 +250,11 @@ freeproc(struct proc *p)
     uvmunmap(p->vm->pagetable, p->user_trapframe, 1, 0);
   p->user_trapframe = 0;
 
-  free_vm_entry(p, p->vm);
+  free_vm_entry(p->vm);
   p->vm = 0;
 
   free_files_entry(p->files);
-  free_fs_entry(p, p->fs);
+  free_fs_entry(p->fs);
   p->fs = 0;
   p->pid = 0;
   p->parent = 0;
@@ -264,24 +268,23 @@ freeproc(struct proc *p)
 // frees the entry if there is no other process sharing this resource
 // e->lock must be held.
 void
-free_vm_entry(struct proc* p, struct vm_entry* e)
+free_vm_entry(struct vm_entry* e)
 {
-  char shared_vm_entry = 0;
-
-  for(struct proc* np = proc; np < &proc[NPROC]; np++) {
-    if(np != p && np->vm == e) {
-      shared_vm_entry = 1;
-    }
+  if(e->reference_count == 0) {
+    panic("already free'ed vm_entry");
   }
 
-  if(!shared_vm_entry) {
+  if(e->reference_count == 1) {
+    // free on the last reference held
+
     if (e->pagetable) {
       proc_freepagetable(e->pagetable, e->sz);
     }
     e->pagetable = 0;
     e->sz = 0;
-    e->unused = 1;
   }
+
+  e->reference_count --;
 }
 
 struct vm_entry*
@@ -290,10 +293,8 @@ alloc_vm_entry(struct proc* p)
   struct vm_entry *entry = 0;
 
   for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC] && entry == 0; e++) {
-    //if(holding(&e->lock))
-    //  continue;
     acquire(&e->lock);
-    if (e->unused == 1) {
+    if (e->reference_count == 0) {
       entry = e;
     } else {
       release(&e->lock);
@@ -304,10 +305,10 @@ alloc_vm_entry(struct proc* p)
     return 0;
   }
 
-  entry->unused = 0;
+  entry->reference_count ++;
   entry->pagetable = proc_pagetable(p);
   if (entry->pagetable == 0) {
-    free_vm_entry(p, entry);
+    free_vm_entry(entry);
     return 0;
   }
   entry->last_trapframe = TRAPFRAME;
@@ -320,7 +321,7 @@ alloc_vm_entry(struct proc* p)
 static void
 free_files_entry(struct files_entry* e)
 {
-  e->unused = 1;
+  e->reference_count --;
 }
 
 static struct files_entry*
@@ -330,9 +331,9 @@ alloc_files_entry()
 
   for (struct files_entry *e = files_entries; e < &files_entries[NPROC] && entry == 0; e++) {
     acquire(&e->lock);
-    if (e->unused == 1) {
+    if (e->reference_count == 0) {
       entry = e;
-      e->unused = 0;
+      e->reference_count ++;
     } else {
       release(&e->lock);
     }
@@ -343,28 +344,27 @@ alloc_files_entry()
 
 // e->lock must be held.
 static void
-free_fs_entry(struct proc* p, struct fs_entry* e)
+free_fs_entry(struct fs_entry* e)
 {
   if(e == 0)
     return;
 
-  char shared_fs_entry = 0;
-
-  for(struct proc* np = proc; np < &proc[NPROC]; np++) {
-    if(np != p && np->fs == e) {
-      shared_fs_entry = 1;
-    }
+  if(e->reference_count == 0) {
+    panic("already free'ed fs_entry");
   }
 
-  if(!shared_fs_entry) {
+  if(e->reference_count == 1) {
+    // free on the last reference held
+
     if(e->cwd != 0) {
       begin_op();
       iput(e->cwd);
       end_op();
     }
     e->cwd = 0;
-    e->unused = 1;
   }
+
+  e->reference_count --;
 }
 
 static struct fs_entry*
@@ -374,9 +374,9 @@ alloc_fs_entry()
 
   for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC] && entry == 0; e++) {
     acquire(&e->lock);
-    if (e->unused == 1) {
+    if (e->reference_count == 0) {
       entry = e;
-      e->unused = 0;
+      e->reference_count++;
     } else {
       release(&e->lock);
     }
@@ -624,7 +624,7 @@ exit(int status)
 
   // free_fs_entry
   acquire(&p->fs->lock);
-  free_fs_entry(p, p->fs);
+  free_fs_entry(p->fs);
   release(&p->fs->lock);
   p->fs = 0;
 
