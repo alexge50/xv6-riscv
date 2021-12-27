@@ -425,50 +425,12 @@ growproc(int n)
 int
 fork(void)
 {
-  int i, pid;
-  struct proc *np;
-  struct proc *p = myproc();
+  struct clone_args cl = {
+    .flags = CLONE_FORK,
+    .stack = 0
+  };
 
-  // Allocate process.
-  if((np = allocproc()) == 0){
-    return -1;
-  }
-
-  // Copy user memory from parent to child.
-  if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0){
-    freeproc(np);
-    release(&np->lock);
-    return -1;
-  }
-  np->vm->sz = p->vm->sz;
-
-  // copy saved user registers.
-  *(np->trapframe) = *(p->trapframe);
-
-  // Cause fork to return 0 in the child.
-  np->trapframe->a0 = 0;
-
-  // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
-    if(p->files->ofile[i])
-      np->files->ofile[i] = filedup(p->files->ofile[i]);
-  np->fs->cwd = idup(p->fs->cwd);
-
-  safestrcpy(np->name, p->name, sizeof(p->name));
-
-  pid = np->pid;
-
-  release(&np->lock);
-
-  acquire(&wait_lock);
-  np->parent = p;
-  release(&wait_lock);
-
-  acquire(&np->lock);
-  np->state = RUNNABLE;
-  release(&np->lock);
-
-  return pid;
+  return clone(cl);
 }
 
 // Create a new process, setting up shared resources, or copying the parent
