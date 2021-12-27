@@ -93,6 +93,8 @@ pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
 struct vm_entry* alloc_vm_entry(struct proc* p);
 void             free_vm_entry(struct vm_entry* e);
+struct fs_entry* alloc_fs_entry();
+void             free_fs_entry(struct fs_entry* e);
 int             kill(int);
 struct cpu*     mycpu(void);
 struct cpu*     getmycpu(void);

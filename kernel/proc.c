@@ -137,10 +137,10 @@ allocpid() {
 
 struct vm_entry* alloc_vm_entry(struct proc* p);
 static struct files_entry* alloc_files_entry();
-static struct fs_entry* alloc_fs_entry();
+struct fs_entry* alloc_fs_entry();
 void free_vm_entry(struct vm_entry* e);
 static void free_files_entry(struct files_entry* e);
-static void free_fs_entry(struct fs_entry* e);
+void free_fs_entry(struct fs_entry* e);
 static uint64 proc_alloc_trapframe(struct proc* p);
 
 // Look in the process table for an UNUSED proc.
@@ -206,7 +206,6 @@ found:
     if (p->fs == 0) {
       goto bad;
     }
-
   }
 
   release(&p->fs->lock);
@@ -343,7 +342,7 @@ alloc_files_entry()
 }
 
 // e->lock must be held.
-static void
+void
 free_fs_entry(struct fs_entry* e)
 {
   if(e == 0)
@@ -367,7 +366,7 @@ free_fs_entry(struct fs_entry* e)
   e->reference_count --;
 }
 
-static struct fs_entry*
+struct fs_entry*
 alloc_fs_entry()
 {
   struct fs_entry *entry = 0;
@@ -566,8 +565,10 @@ clone(struct clone_args cl)
 
   if(!(cl.flags & CLONE_FS)) {
     acquire(&np->fs->lock);
+    acquire(&p->fs->lock);
     np->fs->cwd = idup(p->fs->cwd);
     release(&np->fs->lock);
+    release(&p->fs->lock);
   }
 
   safestrcpy(np->name, p->name, sizeof(p->name));

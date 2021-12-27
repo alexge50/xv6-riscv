@@ -111,7 +111,18 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
+
+  // Make clean copy of `fs_entry` if the resource is shared
+  acquire(&p->fs->lock);
+  if(p->fs->reference_count > 1) {
+    struct fs_entry* old_fs = p->fs;
+    p->fs = alloc_fs_entry();
+    p->fs->cwd = idup(old_fs->cwd);
+    free_fs_entry(old_fs);
+    release(&old_fs->lock);
+  }
+  release(&p->fs->lock);
+
   // Commit to the user image.
   old_vm = p->vm;
   old_trapframe = p->user_trapframe;
