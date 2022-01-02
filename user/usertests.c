@@ -3008,6 +3008,32 @@ clonesharedexec(char* s)
 
 }
 
+// check waitpid syscall
+void
+waitpid_(char* s)
+{
+  int pid[10];
+
+  for(int i = 0; i < 10; i++) {
+    pid[i] = fork();
+
+    if(pid[i] == -1) {
+      printf("%s: fork error\n", s);
+      exit(1);
+    }
+
+    if(pid[i] == 0) {
+      exit(0);
+    }
+  }
+
+  for(int i = 0; i < 10; i++) {
+    if(waitpid(pid[i], 0) == -1) {
+      printf("%s: waitpid error\n", s);
+      exit(1);
+    }
+  }
+}
 
 //
 // use sbrk() to count how many free physical memory pages there are.
@@ -3189,6 +3215,7 @@ main(int argc, char *argv[])
     {clonefiles, "clonefiles"},
     {clonesharedfork, "clonesharedfork"},
     {clonesharedexec, "clonesharedexec"},
+    {waitpid_, "waitpid"},
     { 0, 0},
   };
 

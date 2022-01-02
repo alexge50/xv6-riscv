@@ -124,3 +124,13 @@ sys_clone(void)
 
   return clone(cl);
 }
+
+uint64
+sys_waitpid(void)
+{
+  int pid;
+  uint64 p;
+  if(argint(0, &pid) < 0 || argaddr(1, &p) < 0)
+    return -1;
+  return waitpid(pid, p);
+}
