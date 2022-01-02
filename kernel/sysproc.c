@@ -100,18 +100,27 @@ sys_uptime(void)
 uint64
 sys_clone(void)
 {
-    uint64 cl_args;
+  struct proc* p = myproc();
+  uint64 cl_addr;
 
-    uint64 flags;
-    uint64 stack;
+  struct clone_args cl;
 
-    if(argaddr(0, &cl_args) < 0 || fetchaddr(cl_args, &flags) < 0 || fetchaddr(cl_args + sizeof(uint64), &stack))
-        return -1;
 
-    struct clone_args cl = {
-        .flags = flags,
-        .stack = stack
-    };
+  if(argaddr(0, &cl_addr) < 0) {
+    return -1;
+  }
 
-    return clone(cl);
+  if(cl_addr >= p->vm->sz || cl_addr + sizeof(uint64) > p->vm->sz) {
+    return -1;
+  }
+
+  if(copyin(p->vm->pagetable, (char *)&cl, cl_addr, sizeof(struct clone_args)) != 0) {
+    return -1;
+  }
+
+  if(cl.flags & CLONE_VM && (cl.stack == 0))  {
+    return -1;
+  }
+
+  return clone(cl);
 }

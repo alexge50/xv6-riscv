@@ -599,10 +599,14 @@ clone(struct clone_args cl)
 
   if(cl.flags & CLONE_VM) {
     np->trapframe->sp = cl.stack;
+    np->trapframe->a0 = cl.arg;
+    np->trapframe->epc = cl.fn;
+  } else {
+    // Cause clone to return 0 in the child.
+    np->trapframe->a0 = 0;
   }
 
-  // Cause clone to return 0 in the child.
-  np->trapframe->a0 = 0;
+
 
   // increment reference counts on open file descriptors.
   if(!(cl.flags & CLONE_FILES)) {
