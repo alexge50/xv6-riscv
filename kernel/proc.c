@@ -221,14 +221,14 @@ found:
   return p;
 
 bad:
-  freeproc(p);
-
   if(holding(&p->vm->lock))
     release(&p->vm->lock);
   if(holding(&p->files->lock))
     release(&p->files->lock);
   if(holding(&p->fs->lock))
     release(&p->fs->lock);
+
+  freeproc(p);
 
   release(&p->lock);
 
@@ -265,7 +265,7 @@ freeproc(struct proc *p)
 }
 
 // frees the entry if there is no other process sharing this resource
-// e->lock must be held.
+// e->lock must NOT be held.
 void
 free_vm_entry(struct vm_entry* e)
 {
@@ -273,17 +273,25 @@ free_vm_entry(struct vm_entry* e)
     panic("already free'ed vm_entry");
   }
 
+  acquire(&e->lock);
+
   if(e->reference_count == 1) {
     // free on the last reference held
 
-    if (e->pagetable) {
-      proc_freepagetable(e->pagetable, e->sz);
-    }
+    pagetable_t pagetable = e->pagetable;
+    uint64 sz = e->sz;
     e->pagetable = 0;
     e->sz = 0;
-  }
+    e->reference_count --;
+    release(&e->lock);
 
-  e->reference_count --;
+    if (pagetable) {
+      proc_freepagetable(pagetable, sz);
+    }
+  } else {
+    e->reference_count --;
+    release(&e->lock);
+  }
 }
 
 struct vm_entry*
@@ -307,6 +315,7 @@ alloc_vm_entry(struct proc* p)
   entry->reference_count ++;
   entry->pagetable = proc_pagetable(p);
   if (entry->pagetable == 0) {
+    release(&entry->lock);
     free_vm_entry(entry);
     return 0;
   }
@@ -316,12 +325,14 @@ alloc_vm_entry(struct proc* p)
   return entry;
 }
 
-// e->lock must be held.
+// e->lock must NOT be held.
 void
 free_files_entry(struct files_entry* e)
 {
   if(e == 0)
     return;
+
+  acquire(&e->lock);
 
   if(e->reference_count == 0) {
     panic("already free'ed fs_entry");
@@ -329,17 +340,24 @@ free_files_entry(struct files_entry* e)
 
   if(e->reference_count == 1) {
     // free on the last reference held
+    struct file *ofile[NOFILE];
+    for(int i = 0; i < NOFILE; i++) {
+      ofile[i] = e->ofile[i];
+    }
+    memset(e->ofile, 0, sizeof(struct file*) * NOFILE);
+    e->reference_count --;
+    release(&e->lock);
 
     for(int fd = 0; fd < NOFILE; fd++){
-      if(e->ofile[fd]){
-        struct file *f = e->ofile[fd];
+      if(ofile[fd]){
+        struct file *f = ofile[fd];
         fileclose(f);
-        e->ofile[fd] = 0;
       }
     }
+  } else {
+    e->reference_count --;
+    release(&e->lock);
   }
-
-  e->reference_count --;
 }
 
 struct files_entry*
@@ -360,12 +378,14 @@ alloc_files_entry()
   return entry;
 }
 
-// e->lock must be held.
+// e->lock must NOT be held.
 void
 free_fs_entry(struct fs_entry* e)
 {
   if(e == 0)
     return;
+
+  acquire(&e->lock);
 
   if(e->reference_count == 0) {
     panic("already free'ed fs_entry");
@@ -373,16 +393,21 @@ free_fs_entry(struct fs_entry* e)
 
   if(e->reference_count == 1) {
     // free on the last reference held
+    struct inode *cwd = e->cwd;
+    e->cwd = 0;
+    e->reference_count --;
+    release(&e->lock);
 
-    if(e->cwd != 0) {
+    if(cwd != 0) {
       begin_op();
-      iput(e->cwd);
+      iput(cwd);
       end_op();
     }
-    e->cwd = 0;
-  }
 
-  e->reference_count --;
+  } else {
+    e->reference_count --;
+    release(&e->lock);
+  }
 }
 
 struct fs_entry*
@@ -513,6 +538,7 @@ growproc(int n)
   sz = p->vm->sz;
   if(n > 0){
     if((sz = uvmalloc(p->vm->pagetable, sz, sz + n)) == 0) {
+      release(&p->vm->lock);
       return -1;
     }
   } else if(n < 0){
@@ -552,16 +578,15 @@ clone(struct clone_args cl)
       cl.flags & CLONE_FILES ? p->files : 0,
       cl.flags & CLONE_FS ? p->fs : 0
       )) == 0){
-    release(&np->lock);
     return -1;
   }
 
   if(!(cl.flags & CLONE_VM)) {
     // Copy user memory from parent to child.
     acquire(&p->vm->lock);
-    if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0){
-      freeproc(np);
+    if(uvmcopy(p->vm->pagetable, np->vm->pagetable, p->vm->sz) < 0) {
       release(&p->vm->lock);
+      freeproc(np);
       release(&np->lock);
       return -1;
     }
@@ -646,20 +671,16 @@ exit(int status)
     panic("init exiting");
 
   // Close all open files.
-  acquire(&p->files->lock);
   free_files_entry(p->files);
-  release(&p->files->lock);
   p->files = 0;
 
   // free_fs_entry
-  acquire(&p->fs->lock);
   free_fs_entry(p->fs);
-  release(&p->fs->lock);
   p->fs = 0;
 
   acquire(&wait_lock);
 
-
+  reparent(p);
 
   // Parent might be sleeping in wait().
   wakeup(p->parent);
@@ -705,7 +726,9 @@ wait(uint64 addr)
             release(&wait_lock);
             return -1;
           }
+
           freeproc(np);
+
           release(&np->lock);
           release(&wait_lock);
           return pid;

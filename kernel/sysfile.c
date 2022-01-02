@@ -130,8 +130,8 @@ sys_close(void)
     return -1;
   }
   myproc()->files->ofile[fd] = 0;
-  fileclose(f);
   release(&myproc()->files->lock);
+  fileclose(f);
   return 0;
 }
 
@@ -447,11 +447,15 @@ sys_chdir(void)
     return -1;
   }
   iunlock(ip);
+
   acquire(&p->fs->lock);
-  iput(p->fs->cwd);
-  end_op();
+  struct inode* old_ip = p->fs->cwd;
   p->fs->cwd = ip;
   release(&p->fs->lock);
+
+  iput(old_ip);
+  end_op();
+
   return 0;
 }
 

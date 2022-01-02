@@ -76,6 +76,9 @@ release(struct spinlock *lk)
 int
 holding(struct spinlock *lk)
 {
+  if(lk == 0)
+    panic("NULL spinlock");
+
   int r;
   r = (lk->locked && lk->cpu == mycpu());
   return r;
