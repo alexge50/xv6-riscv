@@ -7,6 +7,7 @@
 #include "kernel/syscall.h"
 #include "kernel/memlayout.h"
 #include "kernel/riscv.h"
+#include "kernel/clone.h"
 
 //
 // Tests xv6 system calls.  usertests without arguments runs them all
@@ -2706,6 +2707,308 @@ execout(char *s)
   exit(0);
 }
 
+/// clone syscall tests
+
+// check that CLONE_VM of clone() is making a process
+// with shared address space
+void
+clonevm_thread(void *arg)
+{
+  int* flag = arg;
+  *flag = 0;
+  sbrk(10);
+
+  exit(0);
+}
+
+void
+clonevm(char* s)
+{
+  char* stack = malloc(4096);
+  int flag = 1;
+  int pid;
+  char* sbrk_val = sbrk(0);
+
+  struct clone_args args = {
+      .flags = CLONE_VM,
+      .stack = (uint64)stack,
+      .fn = (uint64)clonevm_thread,
+      .arg = (uint64)&flag
+  };
+
+  pid = clone(&args);
+
+  if(pid < 0) {
+    printf("%s: clone failed\n", s);
+    exit(1);
+  }
+  wait(0);
+
+  __sync_synchronize();
+  exit(flag || sbrk_val == sbrk(0));
+}
+
+// check that CLONE_FS of clone() is making a process
+// with shared filesystem data
+void
+clonefs(char* s)
+{
+  struct clone_args args = {
+      .flags = CLONE_FS
+  };
+
+  mkdir("clonefs");
+  int pid = clone(&args);
+
+  if(pid < 0) {
+    printf("%s: clone failed\n", s);
+    exit(1);
+  }
+
+  if(pid == 0) {
+    chdir("clonefs");
+    exit(0);
+  }
+  wait(0);
+  int fd = open("usertests", O_RDONLY);
+
+  if(fd == -1) {
+    // chdir successful
+    chdir("..");
+    unlink("clonefs");
+  } else {
+    close(fd);
+    unlink("clonefs");
+    exit(1);
+  }
+}
+
+// check that CLONE_FS of clone() is making a process
+// with shared file descriptor data
+void
+clonefiles(char* s)
+{
+  struct clone_args args = {
+      .flags = CLONE_FILES
+  };
+
+  int fd = open("usertests", O_RDONLY);
+  int pid = clone(&args);
+
+  if(pid < 0) {
+    printf("%s: clone failed\n", s);
+    exit(1);
+  }
+
+  if(pid == 0) {
+    close(fd);
+    exit(0);
+  }
+  wait(0);
+
+  struct stat stat;
+
+  if(fstat(fd, &stat) < 0) {
+    // closing file in processes with
+    // shared file descriptors successful
+  } else {
+    close(fd);
+    exit(1);
+  }
+}
+
+// CLONE_VM and concurrent sbrk, to check integrity
+void
+clonevmsbrk_thread(void *arg)
+{
+  for(int i = 0; i < 8192; i++) {
+    sbrk(1);
+  }
+
+  exit(0);
+}
+
+void
+clonevmsbrk(char* s)
+{
+  char* stack = malloc(4096);
+  static int pid;
+  char* sbrk_val = sbrk(0);
+
+  struct clone_args args = {
+      .flags = CLONE_VM,
+      .stack = (uint64)stack,
+      .fn = (uint64)clonevmsbrk_thread,
+      .arg = 0,
+  };
+
+  pid = clone(&args);
+
+  if(pid < 0) {
+    printf("%s: clone failed\n", s);
+    exit(1);
+  }
+
+  for(int i = 0; i < 8192; i++) {
+    sbrk(1);
+  }
+  wait(0);
+
+  if((long long) sbrk(0) - (long long) sbrk_val != 8192 * 2) {
+    exit(1);
+  }
+}
+
+// clone with shared vm, files and fs, then fork
+void clonesharedfork_thread(void* arg)
+{
+  int pid = fork();
+
+  if(pid < -1) {
+    exit(1);
+  }
+
+  if(pid == 0) {
+    chdir("clonefs");
+    int* flag = arg;
+    close(*flag);
+    *flag = 0;
+    sbrk(10);
+
+    exit(0);
+  }
+  wait(0);
+
+  exit(0);
+}
+
+void
+clonesharedfork(char* s)
+{
+  char* stack = malloc(4096);
+  int flag;
+  int fd;
+  int pid;
+  char* sbrk_val = sbrk(0);
+
+  struct clone_args args = {
+      .flags = CLONE_VM | CLONE_FILES | CLONE_FS,
+      .stack = (uint64)stack,
+      .fn = (uint64)clonesharedfork_thread,
+      .arg = (uint64)&flag
+  };
+
+  mkdir("clonefs");
+  fd = flag = open("usertests", O_RDONLY);
+
+  pid = clone(&args);
+  if(pid < 0) {
+    printf("%s: clone failed\n", s);
+    exit(1);
+  }
+  int xstate;
+  wait(&xstate);
+  if(xstate != 0) {
+    unlink("clonefs");
+    exit(1);
+  }
+
+  int fd2 = open("usertests", O_RDONLY);
+  if(fd2 != -1) {
+    // ok
+  }  else {
+    chdir("..");
+    unlink("clonefs");
+    exit(1);
+  }
+
+  struct stat stat;
+
+  if(fstat(fd, &stat) < 0) {
+    exit(1); // fail
+  }
+
+  __sync_synchronize();
+  if(flag != fd || sbrk_val != sbrk(0)) {
+    exit(1); // fail
+  }
+}
+
+// clone with shared vm, files and fs, then exec
+void
+clonesharedexec_thread(void* arg)
+{
+  char *echoargv[] = { "echo", "OK", 0 };
+
+  close(1);
+  int fd = open("echo-ok", O_CREATE|O_WRONLY);
+  if(fd < 0) {
+    printf("%s: create failed\n", arg);
+    exit(1);
+  }
+  if(fd != 1) {
+    printf("%s: wrong fd\n", arg);
+    exit(1);
+  }
+  if(exec("echo", echoargv) < 0){
+    printf("%s: exec echo failed\n", arg);
+    exit(1);
+  }
+  // won't get to here
+}
+
+void
+clonesharedexec(char* s)
+{
+  int fd, xstatus, pid;
+
+  char buf[3];
+
+  unlink("echo-ok");
+
+  char* stack = malloc(4096);
+  struct clone_args args = {
+      .flags = CLONE_VM,
+      .stack = (uint64)stack,
+      .fn = (uint64)clonesharedexec_thread,
+      .arg = (uint64)s
+  };
+
+  pid = clone(&args);
+  if(pid < 0) {
+    printf("%s: fork failed\n", s);
+    exit(1);
+  }
+  wait(&xstatus);
+  if(xstatus != 0)
+    exit(xstatus);
+
+  close(1);
+  fd = open("console", O_RDWR);
+  if(fd != 1) {
+    exit(1);
+  }
+
+  fd = open("echo-ok", O_RDONLY);
+  if(fd < 0) {
+    printf("%s: open failed\n", s);
+    exit(1);
+  }
+  if (read(fd, buf, 2) != 2) {
+    printf("%s: read failed\n", s);
+    exit(1);
+  }
+  unlink("echo-ok");
+  if(buf[0] == 'O' && buf[1] == 'K')
+    exit(0);
+  else {
+    printf("%s: wrong output\n", s);
+    exit(1);
+  }
+
+}
+
+
 //
 // use sbrk() to count how many free physical memory pages there are.
 // touches the pages to force allocation.
@@ -2881,6 +3184,11 @@ main(int argc, char *argv[])
     {iref, "iref"},
     {forktest, "forktest"},
     {bigdir, "bigdir"}, // slow
+    {clonevm, "clonevm"},
+    {clonefs, "clonefs"},
+    {clonefiles, "clonefiles"},
+    {clonesharedfork, "clonesharedfork"},
+    {clonesharedexec, "clonesharedexec"},
     { 0, 0},
   };
 
