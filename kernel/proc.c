@@ -791,6 +791,7 @@ waitpid(uint64 pid, uint64 addr)
 
       return pid;
     }
+    release(&child_proc->lock);
 
     if(p->killed || child_proc->pid != pid) {
       release(&wait_lock);
