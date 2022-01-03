@@ -8,6 +8,7 @@
 #include "kernel/memlayout.h"
 #include "kernel/riscv.h"
 #include "kernel/clone.h"
+#include "kernel/futex.h"
 
 //
 // Tests xv6 system calls.  usertests without arguments runs them all
@@ -3035,6 +3036,53 @@ waitpid_(char* s)
   }
 }
 
+// check futex syscall
+void
+futex_thread(void* arg)
+{
+  if(futex(FUTEX_WAIT, arg) == -1) {
+    exit(1);
+  }
+  exit(0);
+}
+
+void
+futex_(char* s)
+{
+  int pid[10];
+  char* stacks[10];
+
+  for(int i = 0; i < 10; i++) {
+    stacks[i] = malloc(4096);
+    struct clone_args args = {
+        .flags = CLONE_VM | CLONE_FS | CLONE_FILES,
+        .stack = (uint64) stacks[i],
+        .fn = (uint64) futex_thread,
+        .arg = (uint64) &pid[i]
+    };
+
+    if(clone(&args) < 0) {
+      printf("%s: clone error\n", s);
+      exit(1);
+    }
+  }
+
+  sleep(5);
+  for(int i = 0; i < 10; i ++) {
+    if(futex(FUTEX_WAKE, &pid[i]) < 1) {
+      printf("%s: futex wake error\n");
+    }
+  }
+
+  for(int i = 0; i < 10; i++) {
+    int xstate;
+    wait(&xstate);
+    if(xstate != 0) {
+      exit(1);
+    }
+  }
+}
+
 //
 // use sbrk() to count how many free physical memory pages there are.
 // touches the pages to force allocation.
@@ -3216,6 +3264,7 @@ main(int argc, char *argv[])
     {clonesharedfork, "clonesharedfork"},
     {clonesharedexec, "clonesharedexec"},
     {waitpid_, "waitpid"},
+    {futex_, "futex"},
     { 0, 0},
   };
 

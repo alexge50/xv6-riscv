@@ -134,3 +134,15 @@ sys_waitpid(void)
     return -1;
   return waitpid(pid, p);
 }
+
+uint64
+sys_futex(void)
+{
+  int op;
+  uint64 p;
+  if(argint(0, &op) < 0 || argaddr(1, &p) < 0)
+    return -1;
+
+
+  return futex(op, p);
+}

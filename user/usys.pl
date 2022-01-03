@@ -38,3 +38,4 @@ entry("sleep");
 entry("uptime");
 entry("clone");
 entry("waitpid");
+entry("futex");

@@ -106,6 +106,7 @@ extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
 extern uint64 sys_clone(void);
 extern uint64 sys_waitpid(void);
+extern uint64 sys_futex(void);
 
 static uint64 (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -131,6 +132,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_clone]   sys_clone,
 [SYS_waitpid]   sys_waitpid,
+[SYS_futex]   sys_futex,
 };
 
 void

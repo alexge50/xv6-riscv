@@ -26,6 +26,7 @@ int sleep(int);
 int uptime(void);
 int clone(struct clone_args*);
 int waitpid(int, int*);
+int futex(int, void*);
 
 // ulib.c
 int stat(const char*, struct stat*);

@@ -931,10 +931,11 @@ sleep(void *chan, struct spinlock *lk)
 
 // Wake up all processes sleeping on chan.
 // Must be called without any p->lock.
-void
+int
 wakeup(void *chan)
 {
   struct proc *p;
+  int r = 0;
 
   for(p = proc; p < &proc[NPROC]; p++) {
     if(p != myproc()){
@@ -943,8 +944,11 @@ wakeup(void *chan)
         p->state = RUNNABLE;
       }
       release(&p->lock);
+      r ++;
     }
   }
+
+  return r;
 }
 
 // Kill the process with the given pid.
