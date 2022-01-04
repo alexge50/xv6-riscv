@@ -3071,7 +3071,7 @@ futex_(char* s)
   for(int i = 0; i < 10; i ++) {
     if(futex(FUTEX_WAKE, &pid[i]) < 1) {
       printf("%s: futex wake error\n");
-    }.st
+    }
   }
 
   for(int i = 0; i < 10; i++) {
