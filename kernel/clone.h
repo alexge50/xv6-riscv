@@ -7,6 +7,8 @@ struct clone_args {
   uint64 flags;            // clone flags
   uint64 stack;            // user address of the stack for the new process,
                            // only required when sharing the virtual memory (CLONE_VM)
+                           // the stack grows downward, so this is a pointer to the
+                           // top most byte in the area reserved for the stack
   uint64 fn;               // entry point for the new process,
                            // only required when sharing the virtual memory (CLONE_VM)
                            // must be of signature void(*)(void*)

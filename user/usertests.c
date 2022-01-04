@@ -2725,7 +2725,7 @@ clonevm_thread(void *arg)
 void
 clonevm(char* s)
 {
-  char* stack = malloc(4096);
+  char* stack = ((char*)malloc(4096)) + 4095;
   int flag = 1;
   int pid;
   char* sbrk_val = sbrk(0);
@@ -2832,7 +2832,7 @@ clonevmsbrk_thread(void *arg)
 void
 clonevmsbrk(char* s)
 {
-  char* stack = malloc(4096);
+  char* stack = ((char*)malloc(4096)) + 4095;
   static int pid;
   char* sbrk_val = sbrk(0);
 
@@ -2886,7 +2886,7 @@ void clonesharedfork_thread(void* arg)
 void
 clonesharedfork(char* s)
 {
-  char* stack = malloc(4096);
+  char* stack = ((char*)malloc(4096)) + 4095;
   int flag;
   int fd;
   int pid;
@@ -2967,7 +2967,7 @@ clonesharedexec(char* s)
 
   unlink("echo-ok");
 
-  char* stack = malloc(4096);
+  char* stack = ((char*)malloc(4096)) + 4095;
   struct clone_args args = {
       .flags = CLONE_VM,
       .stack = (uint64)stack,
@@ -3053,7 +3053,7 @@ futex_(char* s)
   char* stacks[10];
 
   for(int i = 0; i < 10; i++) {
-    stacks[i] = malloc(4096);
+    stacks[i] = ((char*)malloc(4096)) + 4095;
     struct clone_args args = {
         .flags = CLONE_VM | CLONE_FS | CLONE_FILES,
         .stack = (uint64) stacks[i],
@@ -3071,7 +3071,7 @@ futex_(char* s)
   for(int i = 0; i < 10; i ++) {
     if(futex(FUTEX_WAKE, &pid[i]) < 1) {
       printf("%s: futex wake error\n");
-    }
+    }.st
   }
 
   for(int i = 0; i < 10; i++) {
