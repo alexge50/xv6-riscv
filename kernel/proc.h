@@ -80,7 +80,7 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
-struct vm_entry {
+struct proc_vm {
   struct spinlock lock;
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
@@ -88,13 +88,13 @@ struct vm_entry {
   int reference_count;
 };
 
-struct files_entry {
+struct proc_files {
   struct spinlock lock;
   struct file *ofile[NOFILE];  // Open files
   int reference_count;
 };
 
-struct fs_entry {
+struct proc_fs {
   struct spinlock lock;
   struct inode *cwd;           // Current directory
   int reference_count;
@@ -118,9 +118,9 @@ struct proc {
 
   // these are private to the process, so p->lock need not be held.
   uint64 kstack;               // Virtual address of kernel stack
-  struct vm_entry* vm;
-  struct files_entry* files;
-  struct fs_entry* fs;
+  struct proc_vm* vm;
+  struct proc_files* files;
+  struct proc_fs* fs;
   struct trapframe *trapframe; // data page for trampoline.S
   uint64 user_trapframe;       // address of trapframe in userspace
   struct context context;      // swtch() here to run process

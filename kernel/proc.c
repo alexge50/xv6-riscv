@@ -11,9 +11,9 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
-struct vm_entry vm_entries[NPROC];
-struct files_entry files_entries[NPROC];
-struct fs_entry fs_entries[NPROC];
+struct proc_vm vm_table[NPROC];
+struct proc_files files_table[NPROC];
+struct proc_fs fs_table[NPROC];
 
 struct proc *initproc;
 
@@ -78,18 +78,18 @@ proc_resource_entries_init()
   initlock(&files_entries_lock, "files_entries_lock");
   initlock(&fs_entries_lock, "fs_entries_lock");
 
-  for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC]; e++) {
-    initlock(&e->lock, "vm_entry");
+  for (struct proc_vm *e = vm_table; e < &vm_table[NPROC]; e++) {
+    initlock(&e->lock, "proc_vm");
     e->reference_count = 0;
   }
 
-  for (struct files_entry *e = files_entries; e < &files_entries[NPROC]; e++) {
-    initlock(&e->lock, "files_entry");
+  for (struct proc_files *e = files_table; e < &files_table[NPROC]; e++) {
+    initlock(&e->lock, "proc_files");
     e->reference_count = 0;
   }
 
-  for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC]; e++) {
-    initlock(&e->lock, "fs_entry");
+  for (struct proc_fs *e = fs_table; e < &fs_table[NPROC]; e++) {
+    initlock(&e->lock, "proc_fs");
     e->reference_count = 0;
   }
 }
@@ -142,7 +142,7 @@ static uint64 proc_alloc_trapframe(struct proc* p);
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(struct vm_entry* vm, struct files_entry* files, struct fs_entry* fs)
+allocproc(struct proc_vm* vm, struct proc_files* files, struct proc_fs* fs)
 {
   struct proc *p;
 
@@ -267,10 +267,10 @@ freeproc(struct proc *p)
 // frees the entry if there is no other process sharing this resource
 // e->lock must NOT be held.
 void
-free_vm_entry(struct vm_entry* e)
+free_vm_entry(struct proc_vm* e)
 {
   if(e->reference_count == 0) {
-    panic("already free'ed vm_entry");
+    panic("already free'ed proc_vm");
   }
 
   acquire(&e->lock);
@@ -294,12 +294,12 @@ free_vm_entry(struct vm_entry* e)
   }
 }
 
-struct vm_entry*
+struct proc_vm*
 alloc_vm_entry(struct proc* p)
 {
-  struct vm_entry *entry = 0;
+  struct proc_vm *entry = 0;
 
-  for (struct vm_entry *e = vm_entries; e < &vm_entries[NPROC] && entry == 0; e++) {
+  for (struct proc_vm *e = vm_table; e < &vm_table[NPROC] && entry == 0; e++) {
     acquire(&e->lock);
     if (e->reference_count == 0) {
       entry = e;
@@ -327,7 +327,7 @@ alloc_vm_entry(struct proc* p)
 
 // e->lock must NOT be held.
 void
-free_files_entry(struct files_entry* e)
+free_files_entry(struct proc_files* e)
 {
   if(e == 0)
     return;
@@ -335,7 +335,7 @@ free_files_entry(struct files_entry* e)
   acquire(&e->lock);
 
   if(e->reference_count == 0) {
-    panic("already free'ed fs_entry");
+    panic("already free'ed proc_fs");
   }
 
   if(e->reference_count == 1) {
@@ -360,12 +360,12 @@ free_files_entry(struct files_entry* e)
   }
 }
 
-struct files_entry*
+struct proc_files*
 alloc_files_entry()
 {
-  struct files_entry *entry = 0;
+  struct proc_files *entry = 0;
 
-  for (struct files_entry *e = files_entries; e < &files_entries[NPROC] && entry == 0; e++) {
+  for (struct proc_files *e = files_table; e < &files_table[NPROC] && entry == 0; e++) {
     acquire(&e->lock);
     if (e->reference_count == 0) {
       entry = e;
@@ -380,7 +380,7 @@ alloc_files_entry()
 
 // e->lock must NOT be held.
 void
-free_fs_entry(struct fs_entry* e)
+free_fs_entry(struct proc_fs* e)
 {
   if(e == 0)
     return;
@@ -388,7 +388,7 @@ free_fs_entry(struct fs_entry* e)
   acquire(&e->lock);
 
   if(e->reference_count == 0) {
-    panic("already free'ed fs_entry");
+    panic("already free'ed proc_fs");
   }
 
   if(e->reference_count == 1) {
@@ -410,12 +410,12 @@ free_fs_entry(struct fs_entry* e)
   }
 }
 
-struct fs_entry*
+struct proc_fs*
 alloc_fs_entry()
 {
-  struct fs_entry *entry = 0;
+  struct proc_fs *entry = 0;
 
-  for (struct fs_entry *e = fs_entries; e < &fs_entries[NPROC] && entry == 0; e++) {
+  for (struct proc_fs *e = fs_table; e < &fs_table[NPROC] && entry == 0; e++) {
     acquire(&e->lock);
     if (e->reference_count == 0) {
       entry = e;

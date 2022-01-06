@@ -18,8 +18,8 @@ exec(char *path, char **argv)
   struct elfhdr elf;
   struct inode *ip;
   struct proghdr ph;
-  struct vm_entry* new_vm = 0;
-  struct vm_entry* old_vm;
+  struct proc_vm* new_vm = 0;
+  struct proc_vm* old_vm;
   uint64 old_trapframe;
   struct proc *p = myproc();
 
@@ -112,10 +112,10 @@ exec(char *path, char **argv)
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
 
-  // Make clean copy of `fs_entry` if the resource is shared
+  // Make clean copy of `proc_fs` if the resource is shared
   acquire(&p->fs->lock);
   if(p->fs->reference_count > 1) {
-    struct fs_entry* old_fs = p->fs;
+    struct proc_fs* old_fs = p->fs;
     p->fs = alloc_fs_entry();
     p->fs->cwd = idup(old_fs->cwd);
     free_fs_entry(old_fs);
@@ -123,10 +123,10 @@ exec(char *path, char **argv)
   }
   release(&p->fs->lock);
 
-  // Make a clean copy of `files_entry` if the resource is shared
+  // Make a clean copy of `proc_files` if the resource is shared
   acquire(&p->files->lock);
   if(p->files->reference_count > 1) {
-    struct files_entry* old_files = p->files;
+    struct proc_files* old_files = p->files;
     p->files = alloc_files_entry();
     for(i = 0; i < NOFILE; i++) {
       if(p->files->ofile[i])
